@@ -127,7 +127,7 @@ class CPM:
                            arguments={'scale': scale_factor})([shortcut_branch, inception_branch])
 
 
-class StackedHurglassNetwork:
+class StackedHourglassNetwork:
     pass
 
 
@@ -143,6 +143,10 @@ class OpenPose:
     colors = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0],
               [0, 255, 0], [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255],
               [0, 0, 255], [85, 0, 255], [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
+
+    keypoints = ["nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder",
+                 "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist",
+                 "left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle"]
 
     def __init__(self, weights_path, config_path, n_scales=1):
         self.weights_path = weights_path
@@ -160,8 +164,6 @@ class OpenPose:
         model['boxsize'] = int(model['boxsize'])
         model['stride'] = int(model['stride'])
         model['padValue'] = int(model['padValue'])
-        # param['starting_range'] = float(param['starting_range'])
-        # param['ending_range'] = float(param['ending_range'])
         param['octave'] = int(param['octave'])
         param['use_gpu'] = int(param['use_gpu'])
         param['starting_range'] = float(param['starting_range'])
@@ -192,17 +194,83 @@ class OpenPose:
 
         t = time()
         heatmap_avg, paf_avg = self._get_hm_paf_av(img)
-        all_peaks, peak_counter = self._get_peaks(heatmap_avg, self.params['thre1'])
+        print('s1: ', time() - t)
+        t1 = time()
+        all_peaks = self._get_peaks(heatmap_avg, self.params['thre1'])
+        print('s2: ', time() - t1)
+        t1 = time()
         connection_all, special_k = self._get_connections(paf_avg, all_peaks, self.params['thre2'], img.shape)
+        print('s3: ', time() - t1)
+        t1 = time()
         subset, candidate = self._get_subset(all_peaks, special_k, connection_all)
+        print('s4: ', time() - t1)
         print('Execution time: ', time() - t)
         return all_peaks, subset, candidate
 
     @staticmethod
-    def draw_parts(canvas, peaks, subset, candidate):
+    def inverse_transform_kps(org_h, org_w, h, w, candidate):
+        kps = candidate[:, 0: 2].astype(np.int)
+        scale_factor = np.max([org_h, org_w]) / h
+        transformed_candidate = np.zeros((candidate.shape[0], 3))
+        if org_h > org_w:
+            resized_w = org_w / scale_factor
+            border = (w - resized_w) / 2
+            for i, kp in enumerate(kps):
+                transformed_candidate[i, 0] = scale_factor * (kp[0] - border)
+                transformed_candidate[i, 1] = scale_factor * kp[1]
+                transformed_candidate[i, 2] = candidate[i, 2]
+        else:
+            resized_h = org_h / scale_factor
+            border = (h - resized_h) / 2
+            for i, kp in enumerate(kps):
+                transformed_candidate[i, 0] = scale_factor * kp[0]
+                transformed_candidate[i, 1] = scale_factor * (kp[1] - border)
+                transformed_candidate[i, 2] = candidate[i, 2]
+        return transformed_candidate
+
+    @staticmethod
+    def draw_inverse_transformed_parts(img, peaks, subset, transformed_candidate):
+        valid_indices = subset.flatten().astype(np.int).tolist()
         for i in range(18):
             for j in range(len(peaks[i])):
-                cv2.circle(canvas, peaks[i][j][0:2], 4, OpenPose.colors[i], thickness=-1)
+                ind = peaks[i][j][-1]
+                if ind in valid_indices:
+                    c = transformed_candidate[ind]
+                    cv2.circle(img, (int(c[0]), int(c[1])), 4, OpenPose.colors[i], thickness=-1)
+
+        stick_width = 4
+
+        for i in range(17):
+            for n in range(len(subset)):
+                index = subset[n][np.array(OpenPose.limb_seq[i]) - 1]
+                if -1 in index:
+                    continue
+                cur_canvas = img.copy()
+                y = transformed_candidate[index.astype(int), 0]
+                x = transformed_candidate[index.astype(int), 1]
+                m_x = np.mean(x)
+                m_y = np.mean(y)
+                length = np.sqrt(np.power(x[0] - x[1], 2) + np.power(y[0] - y[1], 2))
+                angle = np.degrees(np.arctan2(x[0] - x[1], y[0] - y[1]))
+                polygon = cv2.ellipse2Poly((int(m_y), int(m_x)),
+                                           (int(length / 2), stick_width),
+                                           int(angle),
+                                           0,
+                                           360, 1)
+                cv2.fillConvexPoly(cur_canvas, polygon, OpenPose.colors[i])
+                img = cv2.addWeighted(img, 0.4, cur_canvas, 0.6, 0)
+        return img
+
+
+    @staticmethod
+    def draw_parts(canvas, peaks, subset, candidate):
+        valid_indices = subset.flatten().astype(np.int).tolist()
+        for i in range(18):
+            for j in range(len(peaks[i])):
+                peak = peaks[i][j]
+                if int(peak[-1]) not in valid_indices:
+                    continue
+                cv2.circle(canvas, peak[0:2], 4, OpenPose.colors[i], thickness=-1)
 
         stick_width = 4
 
@@ -216,9 +284,12 @@ class OpenPose:
                 x = candidate[index.astype(int), 1]
                 m_x = np.mean(x)
                 m_y = np.mean(y)
-                length = ((x[0] - x[1]) ** 2 + (y[0] - y[1]) ** 2) ** 0.5
+                length = np.sqrt(np.power(x[0] - x[1], 2) + np.power(y[0] - y[1], 2))
                 angle = np.degrees(np.arctan2(x[0] - x[1], y[0] - y[1]))
-                polygon = cv2.ellipse2Poly((int(m_y), int(m_x)), (int(length / 2), stick_width), int(angle), 0,
+                polygon = cv2.ellipse2Poly((int(m_y), int(m_x)),
+                                           (int(length / 2), stick_width),
+                                           int(angle),
+                                           0,
                                            360, 1)
                 cv2.fillConvexPoly(cur_canvas, polygon, OpenPose.colors[i])
                 canvas = cv2.addWeighted(canvas, 0.4, cur_canvas, 0.6, 0)
@@ -228,11 +299,10 @@ class OpenPose:
     def _get_peaks(heatmap_avg, thre1):
         all_peaks = []
         peak_counter = 0
-
         for part in range(18):
             map_ori = heatmap_avg[:, :, part]
-            _map = gaussian_filter(map_ori, sigma=3)
-
+            # _map = gaussian_filter(map_ori, sigma=3)
+            _map = map_ori
             map_left = np.zeros(_map.shape)
             map_left[1:, :] = _map[:-1, :]
             map_right = np.zeros(_map.shape)
@@ -249,12 +319,13 @@ class OpenPose:
                                                   _map > thre1))
             nz = np.nonzero(peaks_binary)
             peaks = list(zip(nz[1], nz[0]))  # note reverse
+            n_peaks = len(peaks)
             peaks_with_score = [x + (map_ori[x[1], x[0]],) for x in peaks]
-            _id = range(peak_counter, peak_counter + len(peaks))
-            peaks_with_score_and_id = [peaks_with_score[i] + (_id[i],) for i in range(len(_id))]
+            peaks_with_score_and_id = [peaks_with_score[i - peak_counter] + (i,) for i in range(peak_counter,
+                                                                                                peak_counter + n_peaks)]
             all_peaks.append(peaks_with_score_and_id)
             peak_counter += len(peaks)
-        return all_peaks, peak_counter
+        return all_peaks
 
     @staticmethod
     def _get_connections(paf_avg, all_peaks, thre2, img_shape):
@@ -372,6 +443,24 @@ class OpenPose:
     def _get_hm_paf_av(self, img):
         """Returns heatmaps and pafs, (ims_size, 19) and (img_size, 38)"""
         multiplier = [i * self.model_params['boxsize'] / img.shape[0] for i in self.params['scale_search']]
+
+        if self.n_scales == 1:
+            scale = multiplier[0]
+            output_blobs, padded_resized_img, pad = self._infere(img, scale)
+
+            # extract outputs, resize, and remove padding
+            heatmap = self._get_heatmap(output_blobs,
+                                        self.model_params['stride'],
+                                        padded_resized_img.shape,
+                                        img.shape,
+                                        pad)
+            paf = self._get_paf(output_blobs,
+                                self.model_params['stride'],
+                                padded_resized_img.shape,
+                                img.shape,
+                                pad)
+            return heatmap, paf
+
         heatmap_avg = np.zeros((img.shape[0], img.shape[1], 19))
         paf_avg = np.zeros((img.shape[0], img.shape[1], 38))
 
@@ -393,9 +482,8 @@ class OpenPose:
                                 padded_resized_img.shape,
                                 img.shape,
                                 pad)
-
-            heatmap_avg = heatmap_avg + heatmap / len(multiplier)
-            paf_avg = paf_avg + paf / len(multiplier)
+            heatmap_avg = heatmap_avg + heatmap / self.n_scales
+            paf_avg = paf_avg + paf / self.n_scales
         return heatmap_avg, paf_avg
 
     def _infere(self, img, scale):
@@ -405,7 +493,9 @@ class OpenPose:
         padded_resized_img, pad = self._pad_right_down_corner(resized_img, stride, pad_value)
 
         input_img = padded_resized_img[np.newaxis, :, :, :]
+        t = time()
         output_blobs = self.model.predict(input_img)
+        print('inference: ', time() - t)
         return output_blobs, padded_resized_img, pad
 
     @staticmethod
@@ -417,8 +507,8 @@ class OpenPose:
                              fy=stride,
                              interpolation=cv2.INTER_CUBIC)
         heatmap = heatmap[:padded_resized_shape[0] - pad[2],
-                  :padded_resized_shape[1] - pad[3],
-                  :]
+                          :padded_resized_shape[1] - pad[3],
+                          :]
         heatmap = cv2.resize(heatmap,
                              (img_shape[1], img_shape[0]),
                              interpolation=cv2.INTER_CUBIC)
@@ -433,8 +523,8 @@ class OpenPose:
                          fy=stride,
                          interpolation=cv2.INTER_CUBIC)
         paf = paf[:padded_resized_shape[0] - pad[2],
-              :padded_resized_shape[1] - pad[3],
-              :]
+                  :padded_resized_shape[1] - pad[3],
+                  :]
         paf = cv2.resize(paf, (img_shape[1], img_shape[0]), interpolation=cv2.INTER_CUBIC)
         return paf
 
