@@ -2,9 +2,9 @@ from configobj import ConfigObj
 from time import time
 
 import numpy as np
-from scipy.ndimage.filters import gaussian_filter
 
 import tensorflow as tf
+import tensorflow_probability as tfb
 from tensorflow import keras as tfk
 import cv2
 tfkl = tfk.layers
@@ -402,7 +402,8 @@ class OpenPose:
                                            (int(length / 2), stick_width),
                                            int(angle),
                                            0,
-                                           360, 1)
+                                           360,
+                                           1)
                 cv2.fillConvexPoly(cur_canvas, polygon, OpenPose.colors[i])
                 canvas = cv2.addWeighted(canvas, 0.4, cur_canvas, 0.6, 0)
         return canvas
@@ -795,8 +796,15 @@ class FastOpenPose:
               [0, 255, 0], [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255],
               [0, 0, 255], [85, 0, 255], [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
 
-    def __init__(self, weights_path, config_path, input_shape=(184, 184)):
-        self.openpose_model = FastOpenPoseModel(weights_path, config_path, input_shape)
+    def __init__(self,
+                 weights_path,
+                 config_path,
+                 input_shape=(184, 184),
+                 gaussian_filtering=True):
+        self.openpose_model = FastOpenPoseModel(weights_path,
+                                                config_path,
+                                                input_shape,
+                                                gaussian_filtering)
         self.model = self.openpose_model.load_model()
         self.fe = FeatureExtractor()
         self.n_joints = 18
@@ -1165,7 +1173,11 @@ class FastOpenPose:
 
 class FastOpenPoseModel:
 
-    def __init__(self, weights_path, config_path, input_shape):
+    def __init__(self,
+                 weights_path,
+                 config_path,
+                 input_shape,
+                 gaussian_filtering):
         self.weights_path = weights_path
         self.config_path = config_path
         self.params, self.model_params = self._read_config()
@@ -1176,6 +1188,7 @@ class FastOpenPoseModel:
         self.thre1 = self.params['thre1']
         self.thre2 = self.params['thre2']
         self.model = None
+        self.gaussian_filtering = gaussian_filtering
 
     def load_model(self):
         self.model = self._create_model()
@@ -1215,6 +1228,15 @@ class FastOpenPoseModel:
         hm = tf.image.resize(x[1], (self.input_h, self.input_w), 'bicubic')
         paf = tf.image.resize(x[0], (self.input_h, self.input_w), 'bicubic')
 
+        if self.gaussian_filtering:
+            gaussian_kernel = self._get_gaussian_kernel()
+            depth_wise_gaussian_kernel = tf.expand_dims(
+                tf.transpose(tf.keras.backend.repeat(gaussian_kernel, 19), perm=(0, 2, 1)), axis=-1)
+            hm = tf.nn.depthwise_conv2d(hm,
+                                        depth_wise_gaussian_kernel,
+                                        [1, 1, 1, 1],
+                                        'SAME')
+
         paddings = tf.constant([[0, 0], [1, 1], [1, 1], [0, 0]])
         padded = tf.pad(hm, paddings)
 
@@ -1230,6 +1252,14 @@ class FastOpenPoseModel:
 
         model = tfk.Model(input_tensor, [paf, masked_hm])
         return model
+
+    @staticmethod
+    def _get_gaussian_kernel(mean=0, sigma=3):
+        size = sigma * 3
+        d = tfb.distributions.Normal(mean, sigma)
+        vals = d.prob(tf.range(start=-size, limit=size + 1, dtype=tf.float32))
+        gauss_kernel = tf.einsum('i,j->ij', vals, vals)
+        return gauss_kernel
 
 
 class FeatureExtractor:
