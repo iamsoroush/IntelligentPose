@@ -192,7 +192,7 @@ class OpenPose:
         else:
             transformed_candidate = self.inverse_transform_kps(org_h, org_w, inference_h, inference_w, candidate)
             drawed = self.draw_inverse_transformed_parts(img, peaks, subset, transformed_candidate)
-        if n_scales is not  None:
+        if n_scales is not None:
             self.n_scales = org_n_scales
         return drawed
 
@@ -869,7 +869,7 @@ class FastOpenPose:
             if (f is not None) and (ft is not None):
                 f_diff = np.abs(f - ft)
                 if f_diff >= threshold:
-                    errors.append(f_diff / 360)
+                    errors.append(f_diff)
                     radius = int(max_radius * f_diff / 360)
                     kp = kps[self.fe.points_comb[i][1]]
                     # cv2.putText(failure_overlay,
@@ -881,19 +881,10 @@ class FastOpenPose:
                     #             2)
 
                     cv2.circle(failure_overlay, (int(kp[0]), int(kp[1])), radius, color, thickness=-1)
-        # error = None
-        # if len(errors) > 0:
-        #     error = int(np.sum(errors) * 100)
-        # cv2.putText(failure_overlay,
-        #             'error: {}'.format(error),
-        #             (x_min, max(y_min - diag // 10, 10)),
-        #             cv2.FONT_HERSHEY_SIMPLEX,
-        #             1,
-        #             (255, 255, 255),
-        #             2)
+
         if len(errors) == 0:
             cv2.putText(failure_overlay,
-                        "That's OK!",
+                        "That's it :D",
                         (x_min, max(y_min - diag // 10, 10)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1,
