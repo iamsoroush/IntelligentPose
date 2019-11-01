@@ -15,8 +15,19 @@ import tensorflow as tf
 
 class MPII:
 
-    def __init__(self, path='pose_dataset', test_size=0.1,
-                 heatmap_variance=3, n_parts=16, batch_size=32):
+    """Class for handling MPII dataset's downloading and preparing.
+
+    Use like this:
+        mpii = MPII()
+        train_ds, test_ds = mpii.generate_dataset()
+    """
+
+    def __init__(self,
+                 path='pose_dataset',
+                 test_size=0.1,
+                 heatmap_variance=3,
+                 n_parts=16,
+                 batch_size=32):
         self.path = os.path.join(path, 'mpii')
         self.images_path = os.path.join(self.path, 'images')
         self.belief_maps_path = os.path.join(self.path, 'believes')
@@ -35,7 +46,7 @@ class MPII:
     def generate_dataset(self):
         """Generates and prepares MPII dataset.
 
-        Returns paths to images and belief maps for train and test.
+        Returns tf.dataset instances for train and test sets.
         """
         self._download()
         self._save_joints()
@@ -292,4 +303,3 @@ class MPII:
         zipped = tf.data.Dataset.zip((img_ds, bm_ds))
         ds = zipped.shuffle(len(img_paths)).repeat().map(load_data).batch(self.batch_size).prefetch(1)
         return ds
-
