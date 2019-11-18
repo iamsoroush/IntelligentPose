@@ -783,6 +783,123 @@ class OpenPoseModel:
         return x
 
 
+class OpenPoseModelV2:
+
+    def __init__(self):
+        pass
+
+    def create_model(self):
+        input_shape = (None, None, 3)
+        stages = 6
+        np_branch1 = 38
+        np_branch2 = 19
+
+        input_tensor = tfkl.Input(input_shape)  # Input must be RGB and (0, 255
+        normalized_input = tfkl.Lambda(lambda x: x / 256 - 0.5)(input_tensor)  # [-0.5, 0.5]
+
+        # VGG
+        stage0_out = self._vgg_block(normalized_input)
+
+        # stage 1
+        stage1_branch1_out = self._stage1_block(stage0_out, np_branch1, 1)
+        stage1_branch2_out = self._stage1_block(stage0_out, np_branch2, 2)
+        x = tfkl.Concatenate()([stage1_branch1_out, stage1_branch2_out, stage0_out])
+
+        # stage t >= 2
+        for sn in range(2, stages + 1):
+            stage_t_branch1_out = self._stage_t_block(x, np_branch1, sn, 1)
+            stage_t_branch2_out = self._stage_t_block(x, np_branch2, sn, 2)
+            if sn < stages:
+                x = tfkl.Concatenate()([stage_t_branch1_out, stage_t_branch2_out, stage0_out])
+
+        model = tfk.Model(input_tensor, [stage_t_branch1_out, stage_t_branch2_out])
+        return model
+
+    def _vgg_block(self, x):
+        # Block 1
+        x = self._conv(x, 64, 3, "conv1_1")
+        x = self._relu(x)
+        x = self._conv(x, 64, 3, "conv1_2")
+        x = self._relu(x)
+        x = self._pooling(x, 2, 2, "pool1_1")
+
+        # Block 2
+        x = self._conv(x, 128, 3, "conv2_1")
+        x = self._relu(x)
+        x = self._conv(x, 128, 3, "conv2_2")
+        x = self._relu(x)
+        x = self._pooling(x, 2, 2, "pool2_1")
+
+        # Block 3
+        x = self._conv(x, 256, 3, "conv3_1")
+        x = self._relu(x)
+        x = self._conv(x, 256, 3, "conv3_2")
+        x = self._relu(x)
+        x = self._conv(x, 256, 3, "conv3_3")
+        x = self._relu(x)
+        x = self._conv(x, 256, 3, "conv3_4")
+        x = self._relu(x)
+        x = self._pooling(x, 2, 2, "pool3_1")
+
+        # Block 4
+        x = self._conv(x, 512, 3, "conv4_1")
+        x = self._relu(x)
+        x = self._conv(x, 512, 3, "conv4_2")
+        x = self._relu(x)
+
+        # Additional non vgg layers
+        x = self._conv(x, 256, 3, "conv4_3_CPM")
+        x = self._relu(x)
+        x = self._conv(x, 128, 3, "conv4_4_CPM")
+        x = self._relu(x)
+        return x
+
+    def _stage1_block(self, x, num_p, branch):
+        x = self._conv(x, 128, 3, "conv5_1_CPM_L%d" % branch)
+        x = self._relu(x)
+        x = self._conv(x, 128, 3, "conv5_2_CPM_L%d" % branch)
+        x = self._relu(x)
+        x = self._conv(x, 128, 3, "conv5_3_CPM_L%d" % branch)
+        x = self._relu(x)
+        x = self._conv(x, 512, 1, "conv5_4_CPM_L%d" % branch)
+        x = self._relu(x)
+        x = self._conv(x, num_p, 1, "conv5_5_CPM_L%d" % branch)
+        return x
+
+    def _stage_t_block(self, x, num_p, stage, branch):
+        x = self._conv(x, 128, 7, "Mconv1_stage%d_L%d" % (stage, branch))
+        x = self._relu(x)
+        x = self._conv(x, 128, 7, "Mconv2_stage%d_L%d" % (stage, branch))
+        x = self._relu(x)
+        x = self._conv(x, 128, 7, "Mconv3_stage%d_L%d" % (stage, branch))
+        x = self._relu(x)
+        x = self._conv(x, 128, 7, "Mconv4_stage%d_L%d" % (stage, branch))
+        x = self._relu(x)
+        x = self._conv(x, 128, 7, "Mconv5_stage%d_L%d" % (stage, branch))
+        x = self._relu(x)
+        x = self._conv(x, 128, 1, "Mconv6_stage%d_L%d" % (stage, branch))
+        x = self._relu(x)
+        x = self._conv(x, num_p, 1, "Mconv7_stage%d_L%d" % (stage, branch))
+        return x
+
+    def _res_conv(self, x, num_p, stage, branch):
+        pass
+
+    @staticmethod
+    def _conv(x, nf, ks, name):
+        out = tfkl.Conv2D(nf, (ks, ks), padding='same', name=name)(x)
+        return out
+
+    @staticmethod
+    def _relu(x):
+        return tfkl.Activation('relu')(x)
+
+    @staticmethod
+    def _pooling(x, ks, st, name):
+        x = tfkl.MaxPooling2D((ks, ks), strides=(st, st), name=name)(x)
+        return x
+
+
 class FastOpenPose:
     map_idx = [[31, 32], [39, 40], [33, 34], [35, 36], [41, 42], [43, 44], [19, 20], [21, 22],
                [23, 24], [25, 26], [27, 28], [29, 30], [47, 48], [49, 50], [53, 54], [51, 52],
@@ -840,15 +957,15 @@ class FastOpenPose:
             features = self.fe.generate_features(kps)
             print('Feature generation: ', time() - t)
 
-            self._draw_kps(drawed, kps, correct_color)
+            # self._draw_kps(drawed, kps, correct_color)
 
             t = time()
             drawed = self._draw_errors(drawed, features, target_features, kps, th, wrong_color)
             print('Error drawing: ', time() - t)
 
-            t = time()
-            drawed = self._draw_connections(drawed, person, transformed_candidate)
-            print('Connections drawing: ', time() - t)
+            # t = time()
+            # drawed = self._draw_connections(drawed, person, transformed_candidate)
+            # print('Connections drawing: ', time() - t)
         return drawed
 
     @staticmethod
