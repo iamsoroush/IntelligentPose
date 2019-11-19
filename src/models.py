@@ -785,34 +785,54 @@ class OpenPoseModel:
 
 class OpenPoseModelV2:
 
-    def __init__(self):
-        pass
+    def __init__(self,
+                 input_shape=(None, None, 3),
+                 paf_stages=5,
+                 cm_stages=1,
+                 np_paf=38,
+                 np_cm=19):
+        """OpenPose model definition proposed in arXiv:1812.08008v2
+
+        :param input_shape: (height, width, n_channels)
+        :param paf_stages: int - number of blocks for part affinity fields
+        :param cm_stages: int - number of blocks for key-point heat-maps, i.e. confidence maps
+        :param np_paf: int - number of channels for part affinity fields
+        :param np_cm: int - number of channels for confidence maps, i.e. number of joints plus 1 for background
+
+        Note: Input image must be RGB(0, 255)
+        """
+
+        # TODO: Correct naming to be compatible with pre-trained model
+
+        self.input_shape = input_shape
+        self.paf_stages = paf_stages
+        self.cm_stages = cm_stages
+        self.np_paf = np_paf
+        self.np_cm = np_cm
 
     def create_model(self):
-        input_shape = (None, None, 3)
-        stages = 6
-        np_branch1 = 38
-        np_branch2 = 19
-
-        input_tensor = tfkl.Input(input_shape)  # Input must be RGB and (0, 255
+        input_tensor = tfkl.Input(self.input_shape)  # Input must be RGB and (0, 255
         normalized_input = tfkl.Lambda(lambda x: x / 256 - 0.5)(input_tensor)  # [-0.5, 0.5]
 
         # VGG
-        stage0_out = self._vgg_block(normalized_input)
+        initial_features = self._vgg_block(normalized_input)
 
-        # stage 1
-        stage1_branch1_out = self._stage1_block(stage0_out, np_branch1, 1)
-        stage1_branch2_out = self._stage1_block(stage0_out, np_branch2, 2)
-        x = tfkl.Concatenate()([stage1_branch1_out, stage1_branch2_out, stage0_out])
+        # PAF blocks
+        paf_out = self._paf_block(initial_features, self.np_paf, 1)
 
-        # stage t >= 2
-        for sn in range(2, stages + 1):
-            stage_t_branch1_out = self._stage_t_block(x, np_branch1, sn, 1)
-            stage_t_branch2_out = self._stage_t_block(x, np_branch2, sn, 2)
-            if sn < stages:
-                x = tfkl.Concatenate()([stage_t_branch1_out, stage_t_branch2_out, stage0_out])
+        for paf_stage in range(2, self.paf_stages + 1):
+            concat = tfkl.Concatenate(axis=-1)([initial_features, paf_out])
+            paf_out = self._paf_block(concat, self.np_paf, paf_stage)
 
-        model = tfk.Model(input_tensor, [stage_t_branch1_out, stage_t_branch2_out])
+        # Confidence maps blocks
+        cm_input = tfkl.Concatenate(axis=-1)([initial_features, paf_out])
+        cm_out = self._cm_block(cm_input, self.np_cm, 1)
+
+        for cm_stage in range(2, self.cm_stages + 1):
+            concat = tfkl.Concatenate(axis=-1)([cm_input, cm_out])
+            cm_out = self._cm_block(concat, self.np_cm, cm_stage)
+
+        model = tfk.Model(input_tensor, [paf_out, cm_out])
         return model
 
     def _vgg_block(self, x):
@@ -854,36 +874,40 @@ class OpenPoseModelV2:
         x = self._relu(x)
         return x
 
-    def _stage1_block(self, x, num_p, branch):
-        x = self._conv(x, 128, 3, "conv5_1_CPM_L%d" % branch)
+    def _paf_block(self, x, stage):
+        x = self._res_conv(x, "Mconv1_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv2_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv3_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv4_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv5_stage%d" % (stage))
+        x = self._conv(x, 128, 1, "Mconv6_stage%d" % (stage))
         x = self._relu(x)
-        x = self._conv(x, 128, 3, "conv5_2_CPM_L%d" % branch)
-        x = self._relu(x)
-        x = self._conv(x, 128, 3, "conv5_3_CPM_L%d" % branch)
-        x = self._relu(x)
-        x = self._conv(x, 512, 1, "conv5_4_CPM_L%d" % branch)
-        x = self._relu(x)
-        x = self._conv(x, num_p, 1, "conv5_5_CPM_L%d" % branch)
+        x = self._conv(x, self.np_paf, 1, "Mconv7_stage%d" % (stage))
         return x
 
-    def _stage_t_block(self, x, num_p, stage, branch):
-        x = self._conv(x, 128, 7, "Mconv1_stage%d_L%d" % (stage, branch))
+    def _cm_block(self, x, stage):
+        x = self._res_conv(x, "Mconv1_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv2_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv3_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv4_stage%d" % (stage))
+        x = self._res_conv(x, "Mconv5_stage%d" % (stage))
+        x = self._conv(x, 128, 1, "Mconv6_stage%d" % (stage))
         x = self._relu(x)
-        x = self._conv(x, 128, 7, "Mconv2_stage%d_L%d" % (stage, branch))
-        x = self._relu(x)
-        x = self._conv(x, 128, 7, "Mconv3_stage%d_L%d" % (stage, branch))
-        x = self._relu(x)
-        x = self._conv(x, 128, 7, "Mconv4_stage%d_L%d" % (stage, branch))
-        x = self._relu(x)
-        x = self._conv(x, 128, 7, "Mconv5_stage%d_L%d" % (stage, branch))
-        x = self._relu(x)
-        x = self._conv(x, 128, 1, "Mconv6_stage%d_L%d" % (stage, branch))
-        x = self._relu(x)
-        x = self._conv(x, num_p, 1, "Mconv7_stage%d_L%d" % (stage, branch))
+        x = self._conv(x, self.np_cm, 1, "Mconv7_stage%d" % (stage))
         return x
 
-    def _res_conv(self, x, num_p, stage, branch):
-        pass
+    def _res_conv(self, x, name):
+        out1 = self._conv(x, 128, 3, name + str(1))
+        out1 = self._relu(out1)
+
+        out2 = self._conv(out1, 128, 3, name + str(2))
+        out2 = self._relu(out2)
+
+        out3 = self._conv(out2, 128, 3, name + str(3))
+        out3 = self._relu(out3)
+
+        out = tfkl.Concatenate(axis=-1)([out1, out2, out3])
+        return out
 
     @staticmethod
     def _conv(x, nf, ks, name):
